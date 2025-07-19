@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flask Chat App</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        .messages {
+            height: calc(100vh - 280px);
+            overflow-y: auto;
+        }
+        .message {
+            animation: fadeIn 0.3s ease-in;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .room-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto px-4 py-8 max-w-4xl">
+        <!-- Create Room Form -->
+        <div id="login-container" class="bg-white rounded-lg shadow-md p-6 mb-8">
+            <h1 class="text-2xl font-bold mb-4 text-gray-800">Create New Chat Room</h1>
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Your Username</label>
+                    <input type="text" id="create-username" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Room Name</label>
+                    <input type="text" id="room" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Room Password (optional)</label>
+                    <input type="password" id="room-password" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                </div>
+                <button onclick="createRoom()" class="w-full bg-green-500 text-white px-4 py-2 rounded-md hover:bg-green-600 transition-colors">
+                    Create New Room
+                </button>
+            </div>
+
+            <!-- Available Rooms Section -->
+            <div class="mt-8 pt-6 border-t border-gray-200">
+                <h2 class="text-xl font-semibold mb-4 text-gray-700">Available Rooms</h2>
+                <div id="room-list" class="room-list space-y-2">
+                    <!-- Room list will be populated here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Join Room Modal -->
+        <div id="join-room-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full">
+            <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
+                <div class="mt-3">
+                    <h3 class="text-lg font-medium text-gray-900 mb-4 text-center">Join Room</h3>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Your Username</label>
+                            <input type="text" id="join-username" 
+                                   class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                                   placeholder="Enter your username">
+                        </div>
+                        <div id="password-field" class="hidden">
+                            <label class="block text-sm font-medium text-gray-700">Room Password</label>
+                            <input type="password" id="join-password" 
+                                   class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                                   placeholder="Enter room password">
+                        </div>
+                        <div class="flex justify-end space-x-3 mt-4">
+                            <button onclick="closeJoinModal()" 
+                                    class="px-4 py-2 bg-gray-100 text-gray-700 text-base font-medium rounded-md hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-300">
+                                Cancel
+                            </button>
+                            <button id="join-room-btn"
+                                    class="px-4 py-2 bg-blue-500 text-white text-base font-medium rounded-md hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-300">
+                                Join Room
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Chat Container -->
+        <div id="chat-container" class="hidden">
+            <div class="bg-white rounded-lg shadow-md p-6 mb-4">
+                <div class="flex justify-between items-center mb-4">
+                    <div>
+                        <h2 class="text-xl font-bold text-gray-800">Chat Room: <span id="room-name"></span></h2>
+                        <p class="text-sm text-gray-600">Created by: <span id="room-creator"></span></p>
+                        <p class="text-sm text-gray-600">Users in room: <span id="user-count">0</span></p>
+                    </div>
+                    <button onclick="leaveRoom()" class="bg-red-500 text-white px-4 py-2 rounded-md hover:bg-red-600 transition-colors">
+                        Leave Room
+                    </button>
+                </div>
+                <div id="messages" class="messages space-y-4 mb-4"></div>
+                <div class="flex space-x-4">
+                    <input type="text" id="message" placeholder="Type your message..." 
+                           class="flex-1 rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                           onkeypress="handleKeyPress(event)">
+                    <button onclick="sendMessage()" class="bg-blue-500 text-white px-6 py-2 rounded-md hover:bg-blue-600 transition-colors">
+                        Send
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let currentUsername = '';
+        let currentRoom = '';
+        let pendingRoomJoin = null;
+        let pendingRoomProtected = false;
+
+        function createRoom() {
+            const username = document.getElementById('create-username').value.trim();
+            const room = document.getElementById('room').value.trim();
+            const password = document.getElementById('room-password').value.trim();
+            
+            if (!username || !room) {
+                alert('Please enter both username and room name');
+                return;
+            }
+
+            currentUsername = username;
+            currentRoom = room;
+            
+            socket.emit('create_room', { 
+                username, 
+                room,
+                password: password || null
+            });
+
+            document.getElementById('login-container').classList.add('hidden');
+            document.getElementById('chat-container').classList.remove('hidden');
+            document.getElementById('room-name').textContent = room;
+            document.getElementById('room-password').value = '';
+        }
+
+        function showJoinModal(roomName, isProtected) {
+            pendingRoomJoin = roomName;
+            pendingRoomProtected = isProtected;
+            
+            // Reset and show modal
+            document.getElementById('join-username').value = '';
+            document.getElementById('join-password').value = '';
+            document.getElementById('join-room-modal').classList.remove('hidden');
+            
+            // Show/hide password field based on room protection
+            const passwordField = document.getElementById('password-field');
+            if (isProtected) {
+                passwordField.classList.remove('hidden');
+            } else {
+                passwordField.classList.add('hidden');
+            }
+            
+            document.getElementById('join-username').focus();
+        }
+
+        function closeJoinModal() {
+            document.getElementById('join-room-modal').classList.add('hidden');
+            pendingRoomJoin = null;
+            pendingRoomProtected = false;
+            // Clear the join form
+            document.getElementById('join-username').value = '';
+            document.getElementById('join-password').value = '';
+        }
+
+        function joinExistingRoom() {
+            const username = document.getElementById('join-username').value.trim();
+            const password = pendingRoomProtected ? document.getElementById('join-password').value : null;
+            
+            if (!username) {
+                alert('Please enter your username');
+                return;
+            }
+
+            if (pendingRoomProtected && !password) {
+                alert('Please enter the room password');
+                return;
+            }
+
+            currentUsername = username;
+            currentRoom = pendingRoomJoin;
+            
+            socket.emit('join', { 
+                username, 
+                room: pendingRoomJoin,
+                password 
+            });
+        }
+
+        // Attach join button event listener
+        document.getElementById('join-room-btn').addEventListener('click', joinExistingRoom);
+
+        function leaveRoom() {
+            socket.emit('leave', { username: currentUsername, room: currentRoom });
+            document.getElementById('login-container').classList.remove('hidden');
+            document.getElementById('chat-container').classList.add('hidden');
+            document.getElementById('messages').innerHTML = '';
+            loadRooms();
+        }
+
+        function sendMessage() {
+            const messageInput = document.getElementById('message');
+            const message = messageInput.value.trim();
+            
+            if (message) {
+                socket.emit('message', { message, room: currentRoom });
+                messageInput.value = '';
+            }
+        }
+
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                sendMessage();
+            }
+        }
+
+        function appendMessage(data) {
+            const messages = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message bg-gray-50 rounded-lg p-3';
+            messageDiv.innerHTML = `
+                <div class="flex justify-between items-start">
+                    <div>
+                        <span class="font-semibold text-blue-600">${data.username}</span>
+                        <span class="text-gray-600">: ${data.message}</span>
+                    </div>
+                    <span class="text-xs text-gray-400">${data.timestamp}</span>
+                </div>
+            `;
+            messages.appendChild(messageDiv);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        function loadRooms() {
+            fetch('/get_rooms')
+                .then(response => response.json())
+                .then(rooms => {
+                    const roomList = document.getElementById('room-list');
+                    roomList.innerHTML = '';
+                    if (rooms.length === 0) {
+                        roomList.innerHTML = '<p class="text-gray-500 text-sm">No active rooms. Create one above!</p>';
+                        return;
+                    }
+                    rooms.forEach(room => {
+                        const roomElement = document.createElement('div');
+                        roomElement.className = 'bg-gray-50 p-3 rounded-md';
+                        roomElement.innerHTML = `
+                            <div class="flex justify-between items-center">
+                                <div>
+                                    <h3 class="font-medium text-blue-600">${room.name}</h3>
+                                    <p class="text-sm text-gray-500">Created by: ${room.creator}</p>
+                                    <p class="text-sm text-gray-500">Users: ${room.user_count}</p>
+                                    ${room.is_protected ? '<p class="text-sm text-yellow-600">🔒 Password Protected</p>' : ''}
+                                </div>
+                                <button onclick="showJoinModal('${room.name}', ${room.is_protected})" 
+                                        class="bg-blue-500 text-white px-3 py-1 rounded-md text-sm hover:bg-blue-600 transition-colors">
+                                    Join
+                                </button>
+                            </div>
+                        `;
+                        roomList.appendChild(roomElement);
+                    });
+                });
+        }
+
+        // Socket event listeners
+        socket.on('message', (data) => {
+            appendMessage(data);
+        });
+
+        socket.on('user_joined', (data) => {
+            // Show chat container only after successful join
+            document.getElementById('login-container').classList.add('hidden');
+            document.getElementById('chat-container').classList.remove('hidden');
+            document.getElementById('room-name').textContent = currentRoom;
+            closeJoinModal();
+
+            const messages = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message text-center text-sm text-gray-500';
+            messageDiv.textContent = `${data.username} joined the room`;
+            messages.appendChild(messageDiv);
+            
+            document.getElementById('room-creator').textContent = data.creator;
+            document.getElementById('user-count').textContent = data.user_count;
+        });
+
+        socket.on('user_left', (data) => {
+            const messages = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message text-center text-sm text-gray-500';
+            messageDiv.textContent = `${data.username} left the room`;
+            messages.appendChild(messageDiv);
+            
+            document.getElementById('user-count').textContent = data.user_count;
+        });
+
+        socket.on('new_room_created', (data) => {
+            loadRooms();
+        });
+
+        socket.on('room_deleted', (data) => {
+            loadRooms();
+        });
+
+        socket.on('error', (data) => {
+            alert(data.message);
+            // Always close the modal and return to homepage for any error
+            closeJoinModal();
+            document.getElementById('login-container').classList.remove('hidden');
+            document.getElementById('chat-container').classList.add('hidden');
+            // Clear any entered passwords
+            document.getElementById('join-password').value = '';
+            document.getElementById('room-password').value = '';
+        });
+
+        // Load rooms when page loads
+        document.addEventListener('DOMContentLoaded', loadRooms);
+        // Refresh room list periodically
+        setInterval(loadRooms, 10000);
+    </script>
+</body>
+</html> 
